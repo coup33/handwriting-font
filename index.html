@@ -22,7 +22,15 @@
       display: flex;
       flex-direction: column;
       touch-action: manipulation;       /* 더블탭 줌 방지 */
+      -webkit-user-select: none;        /* 글자 선택/드래그 방지 */
+      user-select: none;
+      -webkit-touch-callout: none;      /* 길게 눌렀을 때 메뉴 방지 */
     }
+
+    /* 입력창만 선택 허용 */
+    input { -webkit-user-select: text; user-select: text; }
+    /* 이미지/요소 드래그 방지 */
+    img, .char-btn, .guide-label, .nav-btn, .btn { -webkit-user-drag: none; }
 
     header {
       background: #16213e;
@@ -151,6 +159,7 @@
       width: min(62vmin, 460px);
       aspect-ratio: 1 / 1;
       flex-shrink: 0;
+      touch-action: none;               /* 캔버스 영역에서 스크롤 차단 */
     }
 
     .guide-label {
@@ -524,6 +533,7 @@ let isDrawing = false;
 let activePointerId = null;
 let currentStroke = [];
 let allStrokes = [];
+let koGuide = null;       // 한글 가이드: { chars:[{ch,box}], target } | null
 
 const canvas = document.getElementById('draw-canvas');
 const ctx = canvas.getContext('2d');
@@ -592,17 +602,21 @@ function selectKey(key) {
   document.getElementById('current-char-label').textContent =
     currentMode === 'en' ? `현재 문자: "${label}"` : `현재 자모: "${label}" — ${groupLabelForKey(key)}`;
 
-  // 가이드: 한글은 함께 들어갈 짝 글자를 위치에 맞춰 흐리게 표시 (어느 벌인지 구분 + 위치 잡기)
+  // 가이드: 한글은 짝 글자를 실제 조합 위치/크기로 캔버스에 흐리게 + 그릴 위치(점선) 표시
   const guide = document.getElementById('guide-label');
-  let gChar = label, gPos = 'center';
+  koGuide = null;
   if (currentMode === 'ko') {
-    if      (key.startsWith('Cv:')) { gChar = 'ㅏ'; gPos = 'right';  }  // 옆모음용: 오른쪽에 ㅏ
-    else if (key.startsWith('Ch:')) { gChar = 'ㅜ'; gPos = 'bottom'; }  // 밑모음용: 아래에 ㅜ
-    else if (key.startsWith('V:'))  { gChar = 'ㄱ'; gPos = 'left';   }  // 중성: 왼쪽에 ㄱ
-    else if (key.startsWith('F:'))  { gChar = '가'; gPos = 'top';    }  // 종성: 위에 가, 밑에 받침
+    guide.textContent = '';                 // HTML 가이드는 비우고 캔버스에 직접 그림
+    const role = key.slice(0, key.indexOf(':'));
+    const sub  = key.slice(key.indexOf(':') + 1);
+    if      (role === 'Cv') { const b = layoutBoxes('v', false);          koGuide = { chars:[{ch:'ㅏ',box:b.jung}], target:b.cho }; }
+    else if (role === 'Ch') { const b = layoutBoxes('h', false);          koGuide = { chars:[{ch:'ㅜ',box:b.jung}], target:b.cho }; }
+    else if (role === 'V')  { const b = layoutBoxes(jungType(sub), false);koGuide = { chars:[{ch:'ㄱ',box:b.cho}],  target:b.jung }; }
+    else if (role === 'F')  { const b = layoutBoxes('v', true);           koGuide = { chars:[{ch:'ㄱ',box:b.cho},{ch:'ㅏ',box:b.jung}], target:b.jong }; }
+  } else {
+    guide.textContent = label;
+    guide.className = 'guide-label guide-center';
   }
-  guide.textContent = gChar;
-  guide.className = 'guide-label guide-' + gPos;
 
   allStrokes = savedStrokes[key] ? JSON.parse(JSON.stringify(savedStrokes[key])) : [];
   redrawCanvas();
@@ -710,12 +724,54 @@ function drawStrokePath(targetCtx, points, widthScale = 1) {
 
 function redrawCanvas() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawGuideLayer();
   allStrokes.forEach(s => drawStrokePath(ctx, s.points));
 }
 
 function clearCanvas() {
   allStrokes = [];
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  redrawCanvas();
+}
+
+// 한글 가이드(짝 글자 + 그릴 위치 점선)를 캔버스 배경에 렌더
+function drawGuideLayer() {
+  if (currentMode !== 'ko' || !koGuide) return;
+  koGuide.chars.forEach(c => drawGuideChar(c.ch, boxToPx(c.box)));
+  if (koGuide.target) {
+    const t = boxToPx(koGuide.target);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(233,69,96,0.30)';
+    ctx.setLineDash([7, 7]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(t.x, t.y, t.w, t.h);
+    ctx.restore();
+  }
+}
+
+// 폰트 좌표 박스(y 위로+, 베이스라인0) → 캔버스 픽셀 박스
+function boxToPx(b) {
+  const sx = canvas.width / 1000;
+  const topPx = canvas.height * 0.08, basePx = canvas.height * 0.92;
+  const sy = (basePx - topPx) / HANGUL_TOP;
+  return { x: b.x * sx, y: basePx - (b.y + b.h) * sy, w: b.w * sx, h: b.h * sy };
+}
+
+// 짝 글자를 박스에 맞춰 중앙 정렬로 흐리게 그림
+function drawGuideChar(ch, box) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.13)';
+  ctx.font = 'bold 200px -apple-system, system-ui, sans-serif';
+  const m = ctx.measureText(ch);
+  const asc = m.actualBoundingBoxAscent || 140, desc = m.actualBoundingBoxDescent || 0;
+  const left = (m.actualBoundingBoxLeft != null) ? m.actualBoundingBoxLeft : 0;
+  const right = (m.actualBoundingBoxRight != null) ? m.actualBoundingBoxRight : m.width;
+  const gw = (left + right) || m.width || 100, gh = (asc + desc) || 140;
+  const s = Math.min(box.w / gw, box.h / gh) * 0.9;
+  ctx.translate(box.x + box.w / 2, box.y + box.h / 2);
+  ctx.scale(s, s);
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(ch, -(right - left) / 2, (asc - desc) / 2);
+  ctx.restore();
 }
 
 function undoStroke() {
@@ -1197,6 +1253,9 @@ canvas.addEventListener('pointerleave', endDraw);
 // iOS Safari 제스처 차단
 ['gesturestart','gesturechange','gestureend'].forEach(ev =>
   document.addEventListener(ev, e => e.preventDefault(), { passive: false }));
+// 그리는 중 화면 스크롤 차단 + 요소 드래그 차단
+document.addEventListener('touchmove', e => { if (isDrawing) e.preventDefault(); }, { passive: false });
+document.addEventListener('dragstart', e => e.preventDefault());
 
 document.getElementById('stroke-width').addEventListener('input', function() {
   document.getElementById('stroke-val').textContent = this.value;
