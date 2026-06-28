@@ -476,7 +476,7 @@
         Pages·Keynote 등에서 사용할 수 있어요.
       </div>
       <button class="reset-btn" onclick="resetAll()">전체 초기화</button>
-      <div style="font-size:0.65rem; color:#556; text-align:right;">버전 v10 · 2026-06-29</div>
+      <div style="font-size:0.65rem; color:#556; text-align:right;">버전 v11 · 2026-06-29</div>
     </div>
   </div>
 </main>
@@ -1223,10 +1223,10 @@ function layoutBoxes(jt, hasJong) {
       ? { cho:{x:320,y:540,w:360,h:220}, jung:{x:120,y:310,w:760,h:210}, jong:{x:120,y:60,w:760,h:220} }
       : { cho:{x:300,y:430,w:400,h:330}, jung:{x:120,y:80,w:760,h:320} };
   }
-  // 섞임모음(ㅘㅞㅢ 등): ㅜ/ㅗ(가로)+ㅏ/ㅔ(세로)로 분해 → 자음 좌상, 세로파트 우상, 가로파트(작게) 아래
+  // 섞임모음(ㅘㅞㅢ 등): ㅜ/ㅗ(가로)+ㅏ/ㅔ(세로)로 분해. 자음·세로파트는 위에서 가로파트에 닿게(간격 최소화)
   return hasJong
-    ? { cho:{x:90,y:520,w:300,h:240}, jungV:{x:570,y:500,w:350,h:260}, jungH:{x:190,y:300,w:600,h:170}, jong:{x:120,y:60,w:760,h:200} }
-    : { cho:{x:100,y:430,w:330,h:300}, jungV:{x:580,y:400,w:340,h:340}, jungH:{x:180,y:90,w:620,h:250} };
+    ? { cho:{x:90,y:490,w:300,h:270}, jungV:{x:560,y:490,w:360,h:270}, jungH:{x:120,y:300,w:760,h:175}, jong:{x:120,y:60,w:760,h:210} }
+    : { cho:{x:100,y:360,w:330,h:380}, jungV:{x:580,y:360,w:340,h:380}, jungH:{x:120,y:80,w:720,h:265} };
 }
 
 // 음절코드 → placed strokes (폰트 좌표). 필요한 자모 없으면 null
