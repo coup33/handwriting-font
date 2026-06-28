@@ -739,14 +739,41 @@ function updatePreview() {
   }
 }
 
+// ── 폰트 메트릭 (가이드선 기준 정규화) ──────────────────────────────────────
+// CSS 가이드선 위치(캔버스 높이 대비 비율). baseline: 아래에서 18%, cap: 위에서 14%
+const GUIDE_BASELINE = 0.82;   // 베이스라인의 y 비율 (위에서부터)
+const GUIDE_CAP      = 0.14;   // 캡라인의 y 비율 (위에서부터)
+const CAP_HEIGHT     = 700;    // em 1000 기준 대문자 높이
+const SIDE_BEARING   = 30;     // 글자 좌우 여백 (작게 → 자간 빽빽)
+
+// 캔버스 좌표 → 폰트 좌표 변환 계수 (가이드선 기준)
+function fontMetrics() {
+  const baselineY = canvas.height * GUIDE_BASELINE;
+  const capY      = canvas.height * GUIDE_CAP;
+  const scale     = CAP_HEIGHT / (baselineY - capY);   // 캡↔베이스라인 높이를 CAP_HEIGHT로
+  return { baselineY, scale };
+}
+
+// 해당 글자의 좌측 잉크 시작 x (좌우 공백 제거용)
+function glyphMinX(strokes) {
+  let minX = Infinity;
+  strokes.forEach(s => s.points.forEach(p => { minX = Math.min(minX, p.x); }));
+  return isFinite(minX) ? minX : 0;
+}
+
 // ── 획 → 폰트 외곽선 ────────────────────────────────────────────────────────
-function strokesToOpentypePath(strokes, emSize) {
-  const scale = emSize / canvas.width;
+function strokesToOpentypePath(strokes) {
+  const { baselineY, scale } = fontMetrics();
+  const minX = glyphMinX(strokes);
   const path = new opentype.Path();
 
   strokes.forEach(stroke => {
-    // 폰트 좌표로 변환 + 지점별 half-width
-    const pts = stroke.points.map(p => ({ x: p.x * scale, y: p.y * scale, hw: (p.w * scale) / 2 }));
+    // 폰트 좌표로 변환: 가로 크롭(minX) + 좌측여백, 세로 베이스라인 기준 위로 +
+    const pts = stroke.points.map(p => ({
+      x: (p.x - minX) * scale + SIDE_BEARING,
+      y: (baselineY - p.y) * scale,
+      hw: (p.w * scale) / 2
+    }));
     if (pts.length < 2) return;
 
     const { left, right } = buildStrokeOutline(pts);
@@ -800,25 +827,13 @@ function buildCap(center, from, to, hw) {
   return result;
 }
 
-// Y 좌표 플립 (캔버스: 아래 +, 폰트: 위 +)
-function flipY(path, ascender) {
-  const f = new opentype.Path();
-  path.commands.forEach(c => {
-    switch (c.type) {
-      case 'M': f.moveTo(c.x, ascender - c.y); break;
-      case 'L': f.lineTo(c.x, ascender - c.y); break;
-      case 'C': f.curveTo(c.x1, ascender - c.y1, c.x2, ascender - c.y2, c.x, ascender - c.y); break;
-      case 'Q': f.quadraticCurveTo(c.x1, ascender - c.y1, c.x, ascender - c.y); break;
-      case 'Z': f.close(); break;
-    }
-  });
-  return f;
-}
-
-function computeAdvanceWidth(strokes, emSize) {
-  let maxX = 0;
-  strokes.forEach(s => s.points.forEach(p => { maxX = Math.max(maxX, p.x); }));
-  return Math.round((maxX / canvas.width) * emSize + emSize * 0.1);
+// 글자 폭(advance) = 잉크 폭 + 좌우 여백 (가이드 기준 스케일 적용)
+function computeAdvanceWidth(strokes) {
+  const { scale } = fontMetrics();
+  let minX = Infinity, maxX = -Infinity;
+  strokes.forEach(s => s.points.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); }));
+  if (!isFinite(minX)) return Math.round(CAP_HEIGHT * 0.5);
+  return Math.round((maxX - minX) * scale + SIDE_BEARING * 2);
 }
 
 // ── 폰트 내보내기 ──────────────────────────────────────────────────────────
@@ -840,13 +855,11 @@ async function exportFont(format) {
   CHARS.forEach(ch => {
     if (!savedStrokes[ch]) return;
     const strokes = savedStrokes[ch];
-    let path = strokesToOpentypePath(strokes, emSize);
-    path = flipY(path, ascender);
     glyphs.push(new opentype.Glyph({
       name: `uni${ch.charCodeAt(0).toString(16).padStart(4,'0')}`,
       unicode: ch.charCodeAt(0),
-      advanceWidth: computeAdvanceWidth(strokes, emSize),
-      path: path
+      advanceWidth: computeAdvanceWidth(strokes),
+      path: strokesToOpentypePath(strokes)
     }));
   });
 
