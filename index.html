@@ -736,7 +736,7 @@ function clearCanvas() {
 // 한글 가이드(짝 글자 + 그릴 위치 점선)를 캔버스 배경에 렌더
 function drawGuideLayer() {
   if (currentMode !== 'ko' || !koGuide) return;
-  koGuide.chars.forEach(c => drawGuideChar(c.ch, boxToPx(c.box)));
+  koGuide.chars.forEach(c => drawGuideSkeleton(GUIDE_SKEL[c.ch], boxToPx(c.box)));
   if (koGuide.target) {
     const t = boxToPx(koGuide.target);
     ctx.save();
@@ -756,21 +756,38 @@ function boxToPx(b) {
   return { x: b.x * sx, y: basePx - (b.y + b.h) * sy, w: b.w * sx, h: b.h * sy };
 }
 
-// 짝 글자를 박스에 맞춰 중앙 정렬로 흐리게 그림
-function drawGuideChar(ch, box) {
+// 가이드용 자모 골격선 (로컬 0~100 좌표, y 아래로+). 합성 박스에 채워 그림
+const GUIDE_SKEL = {
+  'ㄱ': [ [[12,15],[86,15],[86,86]] ],
+  'ㅏ': [ [[30,6],[30,94]], [[30,52],[88,52]] ],
+  'ㅜ': [ [[8,32],[92,32]], [[50,32],[50,90]] ]
+};
+
+// 골격선을 박스에 채워(stretch) 균일 굵기로 흐리게 그림 → 모든 가이드 통일
+function drawGuideSkeleton(strokes, box) {
+  if (!strokes) return;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  strokes.forEach(s => s.forEach(p => {
+    if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
+    if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
+  }));
+  const bw = Math.max(maxX - minX, 1), bh = Math.max(maxY - minY, 1);
+  const sx = box.w / bw, sy = box.h / bh;
+
   ctx.save();
-  ctx.fillStyle = 'rgba(0,0,0,0.13)';
-  ctx.font = 'bold 200px -apple-system, system-ui, sans-serif';
-  const m = ctx.measureText(ch);
-  const asc = m.actualBoundingBoxAscent || 140, desc = m.actualBoundingBoxDescent || 0;
-  const left = (m.actualBoundingBoxLeft != null) ? m.actualBoundingBoxLeft : 0;
-  const right = (m.actualBoundingBoxRight != null) ? m.actualBoundingBoxRight : m.width;
-  const gw = (left + right) || m.width || 100, gh = (asc + desc) || 140;
-  const s = Math.min(box.w / gw, box.h / gh) * 0.9;
-  ctx.translate(box.x + box.w / 2, box.y + box.h / 2);
-  ctx.scale(s, s);
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText(ch, -(right - left) / 2, (asc - desc) / 2);
+  ctx.strokeStyle = 'rgba(0,0,0,0.16)';
+  ctx.lineWidth = 11;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  strokes.forEach(s => {
+    ctx.beginPath();
+    s.forEach((p, i) => {
+      const x = box.x + (p[0] - minX) * sx;
+      const y = box.y + (p[1] - minY) * sy;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  });
   ctx.restore();
 }
 
@@ -1016,20 +1033,20 @@ function placeJamo(strokes, box) {
 
 // 중성 모양 + 받침 유무에 따른 배치 박스
 function layoutBoxes(jt, hasJong) {
-  if (jt === 'v') {  // 세로모음 (오른쪽)
+  if (jt === 'v') {  // 세로모음 (오른쪽): 초성 왼쪽 + 모음 오른쪽
     return hasJong
-      ? { cho:{x:80,y:380,w:300,h:380}, jung:{x:430,y:340,w:430,h:420}, jong:{x:140,y:40,w:720,h:300} }
-      : { cho:{x:80,y:140,w:300,h:540}, jung:{x:430,y:40,w:490,h:740} };
+      ? { cho:{x:90,y:430,w:330,h:330}, jung:{x:460,y:400,w:470,h:360}, jong:{x:120,y:60,w:760,h:300} }
+      : { cho:{x:90,y:90,w:340,h:650},  jung:{x:470,y:60,w:470,h:700} };
   }
-  if (jt === 'h') {  // 가로모음 (아래)
+  if (jt === 'h') {  // 가로모음 (아래): 초성 위(가운데) + 모음 아래
     return hasJong
-      ? { cho:{x:240,y:530,w:360,h:240}, jung:{x:120,y:300,w:680,h:220}, jong:{x:140,y:40,w:680,h:240} }
-      : { cho:{x:230,y:430,w:380,h:340}, jung:{x:120,y:60,w:680,h:320} };
+      ? { cho:{x:320,y:540,w:360,h:220}, jung:{x:120,y:310,w:760,h:210}, jong:{x:120,y:60,w:760,h:220} }
+      : { cho:{x:300,y:430,w:400,h:330}, jung:{x:120,y:80,w:760,h:320} };
   }
   // 섞임모음 (ㅘ ㅝ ㅢ 등): 초성 좌상단, 모음이 나머지
   return hasJong
-    ? { cho:{x:90,y:500,w:280,h:260}, jung:{x:80,y:250,w:840,h:520}, jong:{x:140,y:40,w:720,h:230} }
-    : { cho:{x:90,y:430,w:300,h:320}, jung:{x:80,y:40,w:840,h:740} };
+    ? { cho:{x:110,y:520,w:300,h:240}, jung:{x:120,y:280,w:820,h:480}, jong:{x:120,y:60,w:760,h:200} }
+    : { cho:{x:110,y:430,w:330,h:330}, jung:{x:120,y:60,w:820,h:700} };
 }
 
 // 음절코드 → placed strokes (폰트 좌표). 필요한 자모 없으면 null
