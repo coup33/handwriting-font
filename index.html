@@ -618,12 +618,15 @@ function selectKey(key) {
     } else if (role === 'V') {               // 중성: ㄱ
       const b = layoutBoxes(jungType(sub), false);
       koGuide = { chars:[{ch:'ㄱ', box:b.cho, ax:0.5, ay:0.5}], target:b.jung };
-    } else if (role === 'F') {               // 종성: 위에 '가'(각−받침), 밑에 받침
+    } else if (role === 'F') {               // 종성: '각'을 칸 전체에 그린 뒤 받침 영역만 잘라냄
       const b = layoutBoxes('v', true);
-      const uni = { x:Math.min(b.cho.x,b.jung.x), y:Math.min(b.cho.y,b.jung.y),
-                    w:Math.max(b.cho.x+b.cho.w, b.jung.x+b.jung.w) - Math.min(b.cho.x,b.jung.x),
-                    h:Math.max(b.cho.y+b.cho.h, b.jung.y+b.jung.h) - Math.min(b.cho.y,b.jung.y) };
-      koGuide = { chars:[{ch:'가', box:uni, ax:0.5, ay:0.5}], target:b.jong };
+      const full = {
+        x: Math.min(b.cho.x, b.jung.x, b.jong.x),
+        y: Math.min(b.cho.y, b.jung.y, b.jong.y),
+        w: Math.max(b.cho.x+b.cho.w, b.jung.x+b.jung.w, b.jong.x+b.jong.w) - Math.min(b.cho.x, b.jung.x, b.jong.x),
+        h: Math.max(b.cho.y+b.cho.h, b.jung.y+b.jung.h, b.jong.y+b.jong.h) - Math.min(b.cho.y, b.jung.y, b.jong.y)
+      };
+      koGuide = { chars:[{ch:'각', box:full, ax:0.5, ay:0.5, clipAbove:b.jong}], target:b.jong };
     }
   } else {
     guide.textContent = label;
@@ -748,7 +751,10 @@ function clearCanvas() {
 // 한글 가이드(짝 글자 + 그릴 위치 점선)를 캔버스 배경에 렌더
 function drawGuideLayer() {
   if (currentMode !== 'ko' || !koGuide) return;
-  koGuide.chars.forEach(c => drawGuideGlyph(c.ch, boxToPx(c.box), c.ax, c.ay));
+  koGuide.chars.forEach(c => {
+    const clipY = c.clipAbove ? boxToPx(c.clipAbove).y : null;   // 이 y 아래(받침 영역)는 가림
+    drawGuideGlyph(c.ch, boxToPx(c.box), c.ax, c.ay, clipY);
+  });
   if (koGuide.target) {
     const t = boxToPx(koGuide.target);
     ctx.save();
@@ -770,8 +776,13 @@ function boxToPx(b) {
 
 // 짝 글자를 실제 폰트 글리프로, 박스에 맞춰(비율유지) 앵커 정렬해 흐리게 그림
 // ax/ay: 0=좌/상, 0.5=중앙, 1=우/하
-function drawGuideGlyph(ch, box, ax, ay) {
+function drawGuideGlyph(ch, box, ax, ay, clipBottomY) {
   ctx.save();
+  if (clipBottomY != null) {                 // 받침 영역(아래)을 잘라 '각−받침'처럼 보이게
+    ctx.beginPath();
+    ctx.rect(0, 0, canvas.width, clipBottomY);
+    ctx.clip();
+  }
   ctx.fillStyle = 'rgba(0,0,0,0.18)';
   const probe = 300;
   ctx.font = 'bold ' + probe + 'px -apple-system, system-ui, sans-serif';
