@@ -241,6 +241,12 @@
     }
     .pen-badge.active { background: #2e7d32; color: #fff; }
 
+    .mode-toggle { display: flex; gap: 4px; background: #0f3460; padding: 3px; border-radius: 8px; }
+    .mode-btn { border: none; background: transparent; color: #aaa; padding: 6px 16px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; touch-action: manipulation; }
+    .mode-btn.active { background: #e94560; color: #fff; }
+    body.ko-mode .guide-lines { display: none; }
+    #compose-info { color: #888; }
+
     /* ── 오른쪽: 미리보기 / 내보내기 ───────────────────── */
     .preview-panel {
       width: 270px;
@@ -386,6 +392,10 @@
 
 <header>
   <h1>✍️ 손글씨 폰트 메이커</h1>
+  <div class="mode-toggle">
+    <button id="mode-en" class="mode-btn active" onclick="setMode('en')">영어</button>
+    <button id="mode-ko" class="mode-btn" onclick="setMode('ko')">한글</button>
+  </div>
   <div class="progress-bar">
     <span class="pen-badge" id="pen-badge">손가락/마우스</span>
     <div class="progress-fill">
@@ -441,7 +451,7 @@
 
     <div class="export-section">
       <h3>내보내기</h3>
-      <div class="done-count">완성: <span id="done-count">0</span> / 62자</div>
+      <div class="done-count">완성: <span id="done-count">0</span> / <span id="total-count">62</span>자<span id="compose-info"></span></div>
       <input type="text" class="font-name-input" id="font-name" placeholder="폰트 이름 (예: MyFont)" value="MyHandwriting" />
       <button class="btn-export ttf" onclick="exportFont('ttf')" id="btn-ttf">TTF 다운로드</button>
       <button class="btn-export woff" onclick="exportFont('woff')" id="btn-woff">WOFF 다운로드</button>
@@ -460,39 +470,92 @@
 <script src="https://cdn.jsdelivr.net/npm/opentype.js@1.3.4/dist/opentype.min.js"></script>
 
 <script>
-// ── 문자 목록 ──────────────────────────────────────────────────────────────
-const CHARS = [
-  ...('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')),
-  ...('abcdefghijklmnopqrstuvwxyz'.split('')),
-  ...('0123456789'.split(''))
-];
+// ── 한글 자모 데이터 ────────────────────────────────────────────────────────
+const CHO  = ['ㄱ','ㄲ','ㄴ','ㄷ','ㄸ','ㄹ','ㅁ','ㅂ','ㅃ','ㅅ','ㅆ','ㅇ','ㅈ','ㅉ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
+const JUNG = ['ㅏ','ㅐ','ㅑ','ㅒ','ㅓ','ㅔ','ㅕ','ㅖ','ㅗ','ㅘ','ㅙ','ㅚ','ㅛ','ㅜ','ㅝ','ㅞ','ㅟ','ㅠ','ㅡ','ㅢ','ㅣ'];
+const JONG = ['','ㄱ','ㄲ','ㄳ','ㄴ','ㄵ','ㄶ','ㄷ','ㄹ','ㄺ','ㄻ','ㄼ','ㄽ','ㄾ','ㄿ','ㅀ','ㅁ','ㅂ','ㅄ','ㅅ','ㅆ','ㅇ','ㅈ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
+const JONG_SINGLES = ['ㄱ','ㄲ','ㄴ','ㄷ','ㄹ','ㅁ','ㅂ','ㅅ','ㅆ','ㅇ','ㅈ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
+// 겹받침 → 단자음 2개로 분해
+const JONG_DECOMP = {
+  'ㄳ':['ㄱ','ㅅ'],'ㄵ':['ㄴ','ㅈ'],'ㄶ':['ㄴ','ㅎ'],'ㄺ':['ㄹ','ㄱ'],'ㄻ':['ㄹ','ㅁ'],
+  'ㄼ':['ㄹ','ㅂ'],'ㄽ':['ㄹ','ㅅ'],'ㄾ':['ㄹ','ㅌ'],'ㄿ':['ㄹ','ㅍ'],'ㅀ':['ㄹ','ㅎ'],'ㅄ':['ㅂ','ㅅ']
+};
+// 중성 분류: v=세로(오른쪽), h=가로(아래), m=섞임
+const JUNG_VERTICAL   = new Set(['ㅏ','ㅐ','ㅑ','ㅒ','ㅓ','ㅔ','ㅕ','ㅖ','ㅣ']);
+const JUNG_HORIZONTAL = new Set(['ㅗ','ㅛ','ㅜ','ㅠ','ㅡ']);
+function jungType(v) {
+  if (JUNG_VERTICAL.has(v)) return 'v';
+  if (JUNG_HORIZONTAL.has(v)) return 'h';
+  return 'm';
+}
+function isHangulSyllable(cp) { return cp >= 0xAC00 && cp <= 0xD7A3; }
 
-const GROUPS = [
-  { label: 'A–Z', chars: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('') },
-  { label: 'a–z', chars: 'abcdefghijklmnopqrstuvwxyz'.split('') },
-  { label: '0–9', chars: '0123456789'.split('') },
+// ── 모드별 문자 그룹 ────────────────────────────────────────────────────────
+// item = { key(저장키), label(표시) }.  영문은 key=label, 한글은 역할 접두사 부여
+const GROUPS_EN = [
+  { label: 'A–Z', items: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c => ({ key: c, label: c })) },
+  { label: 'a–z', items: 'abcdefghijklmnopqrstuvwxyz'.split('').map(c => ({ key: c, label: c })) },
+  { label: '0–9', items: '0123456789'.split('').map(c => ({ key: c, label: c })) },
 ];
+const GROUPS_KO = [
+  { label: '초성 (ㅏㅓ 옆모음용)', items: CHO.map(c => ({ key: 'Cv:' + c, label: c })) },
+  { label: '초성 (ㅗㅜ 밑모음용)', items: CHO.map(c => ({ key: 'Ch:' + c, label: c })) },
+  { label: '중성 (모음)',          items: JUNG.map(v => ({ key: 'V:' + v, label: v })) },
+  { label: '종성 (받침)',          items: JONG_SINGLES.map(c => ({ key: 'F:' + c, label: c })) },
+];
+const PREVIEW_DEFAULT = { en: 'Hello 123', ko: '한글 손글씨' };
 
 const STORE_KEY = 'hwfont_strokes_v2';
 const NAME_KEY  = 'hwfont_name';
+const MODE_KEY  = 'hwfont_mode';
 
-// 저장된 획 데이터: { char: [ { points: [{x,y,w}], } ] }  (w = 해당 지점 전체 굵기, px)
+// 저장된 획 데이터: { key: [ { points: [{x,y,w}] } ] }
 let savedStrokes = {};
+let currentMode = 'en';
+let currentKey = null;
+let panelBtns = {};       // key → 버튼 엘리먼트
 
-let currentChar = null;
 let isDrawing = false;
 let activePointerId = null;
-let currentStroke = [];   // [{x,y,w}]
-let allStrokes = [];      // 현재 캔버스의 모든 획
+let currentStroke = [];
+let allStrokes = [];
 
 const canvas = document.getElementById('draw-canvas');
 const ctx = canvas.getContext('2d');
+
+function currentGroups() { return currentMode === 'en' ? GROUPS_EN : GROUPS_KO; }
+function currentKeys()   { return currentGroups().flatMap(g => g.items.map(i => i.key)); }
+function labelForKey(key) {
+  for (const g of currentGroups()) for (const it of g.items) if (it.key === key) return it.label;
+  return key;
+}
+function groupLabelForKey(key) {
+  for (const g of currentGroups()) for (const it of g.items) if (it.key === key) return g.label;
+  return '';
+}
+
+// ── 모드 전환 ───────────────────────────────────────────────────────────────
+function setMode(mode) {
+  if (mode === currentMode) return;
+  currentMode = mode;
+  document.getElementById('mode-en').classList.toggle('active', mode === 'en');
+  document.getElementById('mode-ko').classList.toggle('active', mode === 'ko');
+  document.body.classList.toggle('ko-mode', mode === 'ko');
+  document.getElementById('preview-text-input').value = PREVIEW_DEFAULT[mode];
+  try { localStorage.setItem(MODE_KEY, mode); } catch (e) {}
+
+  buildCharPanel();
+  selectKey(currentKeys()[0]);
+  updateProgress();
+  updatePreview();
+}
 
 // ── 문자 패널 구성 ──────────────────────────────────────────────────────────
 function buildCharPanel() {
   const panel = document.getElementById('char-panel-scroll');
   panel.innerHTML = '';
-  GROUPS.forEach(group => {
+  panelBtns = {};
+  currentGroups().forEach(group => {
     const groupEl = document.createElement('div');
     groupEl.className = 'char-group';
     groupEl.textContent = group.label;
@@ -500,39 +563,40 @@ function buildCharPanel() {
 
     const grid = document.createElement('div');
     grid.className = 'char-grid';
-    group.chars.forEach(ch => {
+    group.items.forEach(it => {
       const btn = document.createElement('button');
-      btn.className = 'char-btn';
-      btn.id = `char-btn-${ch}`;
-      btn.textContent = ch;
-      btn.onclick = () => selectChar(ch);
+      btn.className = 'char-btn' + (savedStrokes[it.key] ? ' done' : '');
+      btn.textContent = it.label;
+      btn.onclick = () => selectKey(it.key);
+      panelBtns[it.key] = btn;
       grid.appendChild(btn);
     });
     panel.appendChild(grid);
   });
 }
 
-function selectChar(ch) {
-  if (currentChar) {
-    document.getElementById(`char-btn-${currentChar}`)?.classList.remove('active');
+function selectKey(key) {
+  if (currentKey && panelBtns[currentKey]) panelBtns[currentKey].classList.remove('active');
+  currentKey = key;
+  const btn = panelBtns[key];
+  if (btn) {
+    btn.classList.add('active');
+    btn.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
   }
-  currentChar = ch;
-  const btn = document.getElementById(`char-btn-${ch}`);
-  btn?.classList.add('active');
-  btn?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+  const label = labelForKey(key);
+  document.getElementById('current-char-label').textContent =
+    currentMode === 'en' ? `현재 문자: "${label}"` : `현재 자모: "${label}" — ${groupLabelForKey(key)}`;
+  document.getElementById('guide-label').textContent = label;
 
-  document.getElementById('current-char-label').textContent = `현재 문자: "${ch}"`;
-  document.getElementById('guide-label').textContent = ch;
-
-  allStrokes = savedStrokes[ch] ? JSON.parse(JSON.stringify(savedStrokes[ch])) : [];
+  allStrokes = savedStrokes[key] ? JSON.parse(JSON.stringify(savedStrokes[key])) : [];
   redrawCanvas();
 }
 
 function navChar(dir) {
-  if (!currentChar) { selectChar(CHARS[0]); return; }
-  const idx = CHARS.indexOf(currentChar);
-  const next = idx + dir;
-  if (next >= 0 && next < CHARS.length) selectChar(CHARS[next]);
+  const keys = currentKeys();
+  if (!currentKey) { selectKey(keys[0]); return; }
+  const next = keys.indexOf(currentKey) + dir;
+  if (next >= 0 && next < keys.length) selectKey(keys[next]);
 }
 
 // ── 입력 위치 / 굵기 ────────────────────────────────────────────────────────
@@ -561,7 +625,7 @@ function markPenBadge(type) {
 
 // ── 그리기 (Pointer Events) ─────────────────────────────────────────────────
 function startDraw(e) {
-  if (!currentChar) { showToast('먼저 문자를 선택하세요', true); return; }
+  if (!currentKey) { showToast('먼저 문자를 선택하세요', true); return; }
   if (isDrawing) return;
   e.preventDefault();
   markPenBadge(e.pointerType);
@@ -646,19 +710,20 @@ function undoStroke() {
 
 // ── 저장 / 영속화 ───────────────────────────────────────────────────────────
 function saveChar() {
-  if (!currentChar) { showToast('문자를 선택하세요', true); return; }
+  if (!currentKey) { showToast('문자를 선택하세요', true); return; }
   if (allStrokes.length === 0) { showToast('먼저 글자를 그려주세요', true); return; }
 
-  savedStrokes[currentChar] = JSON.parse(JSON.stringify(allStrokes));
-  document.getElementById(`char-btn-${currentChar}`)?.classList.add('done');
+  savedStrokes[currentKey] = JSON.parse(JSON.stringify(allStrokes));
+  panelBtns[currentKey]?.classList.add('done');
 
   persist();
   updateProgress();
   updatePreview();
-  showToast(`"${currentChar}" 저장 완료!`);
+  showToast(`"${labelForKey(currentKey)}" 저장 완료!`);
 
-  const idx = CHARS.indexOf(currentChar);
-  if (idx < CHARS.length - 1) selectChar(CHARS[idx + 1]);
+  const keys = currentKeys();
+  const idx = keys.indexOf(currentKey);
+  if (idx < keys.length - 1) selectKey(keys[idx + 1]);
 }
 
 function persist() {
@@ -674,34 +739,52 @@ function loadSaved() {
     if (raw) savedStrokes = JSON.parse(raw);
     const name = localStorage.getItem(NAME_KEY);
     if (name) document.getElementById('font-name').value = name;
+    const mode = localStorage.getItem(MODE_KEY);
+    if (mode === 'en' || mode === 'ko') currentMode = mode;
   } catch (err) { savedStrokes = {}; }
 
-  Object.keys(savedStrokes).forEach(ch => {
-    document.getElementById(`char-btn-${ch}`)?.classList.add('done');
-  });
+  document.getElementById('mode-en').classList.toggle('active', currentMode === 'en');
+  document.getElementById('mode-ko').classList.toggle('active', currentMode === 'ko');
+  document.body.classList.toggle('ko-mode', currentMode === 'ko');
 }
 
 function resetAll() {
-  if (!confirm('저장한 모든 글자를 삭제할까요? 되돌릴 수 없습니다.')) return;
+  if (!confirm('저장한 모든 글자(영어+한글)를 삭제할까요? 되돌릴 수 없습니다.')) return;
   savedStrokes = {};
   localStorage.removeItem(STORE_KEY);
-  document.querySelectorAll('.char-btn.done').forEach(b => b.classList.remove('done'));
+  buildCharPanel();
   clearCanvas();
+  selectKey(currentKeys()[0]);
   updateProgress();
   updatePreview();
   showToast('초기화되었습니다');
 }
 
 function updateProgress() {
-  const done = Object.keys(savedStrokes).length;
+  const keys = currentKeys();
+  const done = keys.filter(k => savedStrokes[k]).length;
+  const total = keys.length;
   document.getElementById('done-count').textContent = done;
-  document.getElementById('progress-text').textContent = `${done} / 62`;
-  document.getElementById('progress-inner').style.width = `${(done / 62) * 100}%`;
+  document.getElementById('total-count').textContent = total;
+  document.getElementById('progress-text').textContent = `${done} / ${total}`;
+  document.getElementById('progress-inner').style.width = `${(done / total) * 100}%`;
+
+  const info = document.getElementById('compose-info');
+  info.textContent = currentMode === 'ko' ? ` · 조합가능 ${countComposable()}자` : '';
+}
+
+// 현재 그려진 자모로 만들 수 있는 음절 수
+function countComposable() {
+  let n = 0;
+  for (let code = 0xAC00; code <= 0xD7A3; code++) {
+    if (composeSyllable(code)) n++;
+  }
+  return n;
 }
 
 // ── 미리보기 ───────────────────────────────────────────────────────────────
 function updatePreview() {
-  const text = document.getElementById('preview-text-input').value || 'Hello';
+  const text = document.getElementById('preview-text-input').value || PREVIEW_DEFAULT[currentMode];
   const pc = document.getElementById('preview-canvas');
   const w = pc.parentElement.clientWidth || 238;
   pc.width = w;
@@ -710,33 +793,69 @@ function updatePreview() {
   pctx.clearRect(0, 0, pc.width, pc.height);
 
   const charH = 80;
-  const scale = charH / canvas.height;
+  const scale = charH / canvas.height;          // 캔버스 좌표(영문) → 픽셀
+  const baseY = 10 + GUIDE_BASELINE * charH;     // 베이스라인 픽셀
+  const scKo  = (baseY - 10) / HANGUL_TOP;       // 폰트 좌표(한글) → 픽셀
   let x = 8;
 
   for (const ch of text) {
+    if (x > pc.width) break;
+    const cp = ch.codePointAt(0);
+
     if (ch === ' ') { x += charH * 0.3; continue; }
-    if (!savedStrokes[ch]) {
+
+    // 한글 음절 → 합성
+    if (isHangulSyllable(cp)) {
+      const placed = composeSyllable(cp);
+      if (placed) {
+        renderPlacedPreview(pctx, placed, x, baseY, scKo);
+        x += HANGUL_ADVANCE * scKo + 4;
+      } else {
+        pctx.fillStyle = '#bbb';
+        pctx.font = `${charH * 0.82}px system-ui`;
+        pctx.fillText(ch, x, baseY);
+        x += charH * 0.9;
+      }
+      continue;
+    }
+
+    // 영문/숫자
+    if (savedStrokes[ch]) {
+      const strokes = savedStrokes[ch];
+      let minX = Infinity, maxX = -Infinity;
+      strokes.forEach(s => s.points.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); }));
+      const charW = Math.max(maxX - minX, 10);
+      pctx.save();
+      pctx.translate(x - minX * scale, 10);
+      pctx.scale(scale, scale);
+      strokes.forEach(s => drawStrokePath(pctx, s.points));
+      pctx.restore();
+      x += charW * scale + 6;
+    } else {
       pctx.fillStyle = '#bbb';
       pctx.font = `${charH * 0.7}px system-ui`;
       pctx.fillText(ch, x, charH * 0.85);
       x += charH * 0.55;
-      continue;
     }
-
-    const strokes = savedStrokes[ch];
-    let minX = Infinity, maxX = -Infinity;
-    strokes.forEach(s => s.points.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); }));
-    const charW = Math.max(maxX - minX, 10);
-
-    pctx.save();
-    pctx.translate(x - minX * scale, 10);
-    pctx.scale(scale, scale);
-    strokes.forEach(s => drawStrokePath(pctx, s.points));
-    pctx.restore();
-
-    x += charW * scale + 6;
-    if (x > pc.width) break;
   }
+}
+
+// 폰트 좌표(y 위로 +, 베이스라인 0)의 placed strokes를 미리보기에 렌더
+function renderPlacedPreview(pctx, placed, ox, baseY, sc) {
+  pctx.lineCap = 'round';
+  pctx.lineJoin = 'round';
+  pctx.strokeStyle = '#111';
+  placed.forEach(st => {
+    const pts = st.points;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      pctx.lineWidth = (a.hw + b.hw) * sc;       // hw=반굵기 → 전체=2*hw, 평균=(a.hw+b.hw)
+      pctx.beginPath();
+      pctx.moveTo(ox + a.x * sc, baseY - a.y * sc);
+      pctx.lineTo(ox + b.x * sc, baseY - b.y * sc);
+      pctx.stroke();
+    }
+  });
 }
 
 // ── 폰트 메트릭 (가이드선 기준 정규화) ──────────────────────────────────────
@@ -761,40 +880,120 @@ function glyphMinX(strokes) {
   return isFinite(minX) ? minX : 0;
 }
 
-// ── 획 → 폰트 외곽선 ────────────────────────────────────────────────────────
-function strokesToOpentypePath(strokes) {
-  const { baselineY, scale } = fontMetrics();
-  const minX = glyphMinX(strokes);
+// ── 외곽선 생성 (폰트 좌표 placed strokes → opentype.Path) ───────────────────
+// placed: [ { points: [{x, y, hw}] } ]  (y 위로 +, hw=반굵기)
+function outlineFromStrokes(placed) {
   const path = new opentype.Path();
-
-  strokes.forEach(stroke => {
-    // 폰트 좌표로 변환: 가로 크롭(minX) + 좌측여백, 세로 베이스라인 기준 위로 +
-    const pts = stroke.points.map(p => ({
-      x: (p.x - minX) * scale + SIDE_BEARING,
-      y: (baselineY - p.y) * scale,
-      hw: (p.w * scale) / 2
-    }));
+  placed.forEach(stroke => {
+    const pts = stroke.points;
     if (pts.length < 2) return;
-
     const { left, right } = buildStrokeOutline(pts);
     if (left.length < 2) return;
 
     path.moveTo(left[0].x, left[0].y);
     for (let i = 1; i < left.length; i++) path.lineTo(left[i].x, left[i].y);
-
-    // 끝 캡
     buildCap(pts[pts.length - 1], right[right.length - 1], left[left.length - 1], pts[pts.length - 1].hw)
       .forEach(p => path.lineTo(p.x, p.y));
-
     for (let i = right.length - 1; i >= 0; i--) path.lineTo(right[i].x, right[i].y);
-
-    // 시작 캡
     buildCap(pts[0], left[0], right[0], pts[0].hw).forEach(p => path.lineTo(p.x, p.y));
-
     path.close();
   });
-
   return path;
+}
+
+// ── 영문: 획 → 폰트 외곽선 (가이드선 기준 정규화) ───────────────────────────
+function strokesToOpentypePath(strokes) {
+  const { baselineY, scale } = fontMetrics();
+  const minX = glyphMinX(strokes);
+  const placed = strokes.map(s => ({
+    points: s.points.map(p => ({
+      x: (p.x - minX) * scale + SIDE_BEARING,
+      y: (baselineY - p.y) * scale,
+      hw: (p.w * scale) / 2
+    }))
+  }));
+  return outlineFromStrokes(placed);
+}
+
+// ── 한글 조합 엔진 ──────────────────────────────────────────────────────────
+const HANGUL_TOP     = 800;    // 음절 칸 상단 (폰트 좌표)
+const HANGUL_ADVANCE = 1000;   // 한글은 전각 고정폭
+
+// 자모 획(캔버스 좌표)을 폰트 좌표 박스에 균일 스케일 + 중앙 배치
+// box = { x:좌, y:하단, w, h }  (y 위로 +)
+function placeJamo(strokes, box) {
+  if (!strokes || !strokes.length) return [];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  strokes.forEach(s => s.points.forEach(p => {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }));
+  if (!isFinite(minX)) return [];
+  const bw = Math.max(maxX - minX, 1), bh = Math.max(maxY - minY, 1);
+  const sc = Math.min(box.w / bw, box.h / bh);
+  const ox = box.x + (box.w - bw * sc) / 2;
+  const oy = box.y + (box.h - bh * sc) / 2;
+  return strokes.map(s => ({
+    points: s.points.map(p => ({
+      x: ox + (p.x - minX) * sc,
+      y: oy + (maxY - p.y) * sc,    // 캔버스 y(아래+) → 폰트 y(위+)
+      hw: (p.w * sc) / 2
+    }))
+  }));
+}
+
+// 중성 모양 + 받침 유무에 따른 배치 박스
+function layoutBoxes(jt, hasJong) {
+  if (jt === 'v') {  // 세로모음 (오른쪽)
+    return hasJong
+      ? { cho:{x:80,y:380,w:300,h:380}, jung:{x:430,y:340,w:430,h:420}, jong:{x:140,y:40,w:720,h:300} }
+      : { cho:{x:80,y:140,w:300,h:540}, jung:{x:430,y:40,w:490,h:740} };
+  }
+  if (jt === 'h') {  // 가로모음 (아래)
+    return hasJong
+      ? { cho:{x:240,y:530,w:360,h:240}, jung:{x:120,y:300,w:680,h:220}, jong:{x:140,y:40,w:680,h:240} }
+      : { cho:{x:230,y:430,w:380,h:340}, jung:{x:120,y:60,w:680,h:320} };
+  }
+  // 섞임모음 (ㅘ ㅝ ㅢ 등): 초성 좌상단, 모음이 나머지
+  return hasJong
+    ? { cho:{x:90,y:500,w:280,h:260}, jung:{x:80,y:250,w:840,h:520}, jong:{x:140,y:40,w:720,h:230} }
+    : { cho:{x:90,y:430,w:300,h:320}, jung:{x:80,y:40,w:840,h:740} };
+}
+
+// 음절코드 → placed strokes (폰트 좌표). 필요한 자모 없으면 null
+function composeSyllable(code) {
+  const s = code - 0xAC00;
+  if (s < 0 || s >= 11172) return null;
+  const cho  = CHO[Math.floor(s / 588)];
+  const jung = JUNG[Math.floor((s % 588) / 28)];
+  const jongIdx = s % 28;
+  const jong = JONG[jongIdx];
+  const jt = jungType(jung);
+  const hasJong = jongIdx > 0;
+  const box = layoutBoxes(jt, hasJong);
+
+  const choStrokes  = savedStrokes[(jt === 'v' ? 'Cv:' : 'Ch:') + cho];
+  const jungStrokes = savedStrokes['V:' + jung];
+  if (!choStrokes || !jungStrokes) return null;
+
+  let placed = placeJamo(choStrokes, box.cho).concat(placeJamo(jungStrokes, box.jung));
+
+  if (hasJong) {
+    if (JONG_DECOMP[jong]) {                       // 겹받침 → 좌우 분할
+      const [a, b] = JONG_DECOMP[jong];
+      const sa = savedStrokes['F:' + a], sb = savedStrokes['F:' + b];
+      if (!sa || !sb) return null;
+      const half = box.jong.w / 2 - 10;
+      placed = placed
+        .concat(placeJamo(sa, { x: box.jong.x, y: box.jong.y, w: half, h: box.jong.h }))
+        .concat(placeJamo(sb, { x: box.jong.x + box.jong.w / 2 + 10, y: box.jong.y, w: half, h: box.jong.h }));
+    } else {
+      const sj = savedStrokes['F:' + jong];
+      if (!sj) return null;
+      placed = placed.concat(placeJamo(sj, box.jong));
+    }
+  }
+  return placed.length ? placed : null;
 }
 
 function buildStrokeOutline(pts) {
@@ -837,48 +1036,67 @@ function computeAdvanceWidth(strokes) {
 }
 
 // ── 폰트 내보내기 ──────────────────────────────────────────────────────────
-async function exportFont(format) {
+function exportFont(format) {
   if (!window.opentype) { showToast('opentype.js 로딩 중입니다. 잠시 후 시도하세요.', true); return; }
-  const done = Object.keys(savedStrokes);
-  if (done.length === 0) { showToast('저장된 문자가 없습니다', true); return; }
+  if (Object.keys(savedStrokes).length === 0) { showToast('저장된 문자가 없습니다', true); return; }
 
+  showToast('폰트 생성 중...');
+  // UI가 토스트를 그릴 시간을 준 뒤 무거운 작업 실행
+  setTimeout(() => {
+    try { buildAndDownload(format); }
+    catch (err) { showToast('생성 실패: ' + err.message, true); }
+  }, 50);
+}
+
+function buildAndDownload(format) {
   const fontName  = document.getElementById('font-name').value.trim() || 'MyHandwriting';
   const emSize    = 1000;
   const ascender  = 800;
   const descender = -200;
 
-  const glyphs = [ new opentype.Glyph({ name: '.notdef', unicode: 0, advanceWidth: 500, path: new opentype.Path() }) ];
+  const glyphs = [
+    new opentype.Glyph({ name: '.notdef', unicode: 0, advanceWidth: 500, path: new opentype.Path() }),
+    new opentype.Glyph({ name: 'space', unicode: 32, advanceWidth: Math.round(emSize * 0.3), path: new opentype.Path() })
+  ];
 
-  // 공백 글리프
-  glyphs.push(new opentype.Glyph({ name: 'space', unicode: 32, advanceWidth: Math.round(emSize * 0.3), path: new opentype.Path() }));
-
-  CHARS.forEach(ch => {
-    if (!savedStrokes[ch]) return;
-    const strokes = savedStrokes[ch];
+  // 영문/숫자 (그려진 것만)
+  GROUPS_EN.forEach(g => g.items.forEach(it => {
+    const strokes = savedStrokes[it.key];
+    if (!strokes) return;
     glyphs.push(new opentype.Glyph({
-      name: `uni${ch.charCodeAt(0).toString(16).padStart(4,'0')}`,
-      unicode: ch.charCodeAt(0),
+      name: `uni${it.key.charCodeAt(0).toString(16).padStart(4,'0')}`,
+      unicode: it.key.charCodeAt(0),
       advanceWidth: computeAdvanceWidth(strokes),
       path: strokesToOpentypePath(strokes)
     }));
-  });
+  }));
+
+  // 한글 음절 (조합 가능한 것만)
+  let hangulCount = 0;
+  for (let code = 0xAC00; code <= 0xD7A3; code++) {
+    const placed = composeSyllable(code);
+    if (!placed) continue;
+    glyphs.push(new opentype.Glyph({
+      name: `uni${code.toString(16).toUpperCase().padStart(4,'0')}`,
+      unicode: code,
+      advanceWidth: HANGUL_ADVANCE,
+      path: outlineFromStrokes(placed)
+    }));
+    hangulCount++;
+  }
 
   const font = new opentype.Font({
-    familyName: fontName,
-    styleName: 'Regular',
-    unitsPerEm: emSize,
-    ascender, descender,
-    glyphs
+    familyName: fontName, styleName: 'Regular',
+    unitsPerEm: emSize, ascender, descender, glyphs
   });
 
   const buf = font.toArrayBuffer();
   if (format === 'ttf') {
     downloadBuf(buf, fontName + '.ttf', 'font/ttf');
-    showToast('TTF 다운로드 완료!');
   } else {
     downloadBuf(ttfToWoff(buf), fontName + '.woff', 'font/woff');
-    showToast('WOFF 다운로드 완료!');
   }
+  showToast(`완료! 영문+숫자, 한글 ${hangulCount}자 (${format.toUpperCase()})`);
 }
 
 // ── TTF → WOFF (비압축 래핑) ────────────────────────────────────────────────
@@ -971,10 +1189,11 @@ document.getElementById('font-name').addEventListener('input', persist);
 window.addEventListener('resize', updatePreview);
 
 // ── 초기화 ─────────────────────────────────────────────────────────────────
+loadSaved();                                   // savedStrokes + 모드 복원
+document.getElementById('preview-text-input').value = PREVIEW_DEFAULT[currentMode];
 buildCharPanel();
-loadSaved();
+selectKey(currentKeys()[0]);
 updateProgress();
-selectChar('A');
 updatePreview();
 </script>
 </body>
