@@ -609,10 +609,22 @@ function selectKey(key) {
     guide.textContent = '';                 // HTML 가이드는 비우고 캔버스에 직접 그림
     const role = key.slice(0, key.indexOf(':'));
     const sub  = key.slice(key.indexOf(':') + 1);
-    if      (role === 'Cv') { const b = layoutBoxes('v', false);          koGuide = { chars:[{ch:'ㅏ',box:b.jung}], target:b.cho }; }
-    else if (role === 'Ch') { const b = layoutBoxes('h', false);          koGuide = { chars:[{ch:'ㅜ',box:b.jung}], target:b.cho }; }
-    else if (role === 'V')  { const b = layoutBoxes(jungType(sub), false);koGuide = { chars:[{ch:'ㄱ',box:b.cho}],  target:b.jung }; }
-    else if (role === 'F')  { const b = layoutBoxes('v', true);           koGuide = { chars:[{ch:'ㄱ',box:b.cho},{ch:'ㅏ',box:b.jung}], target:b.jong }; }
+    if (role === 'Cv') {                     // 초성(옆모음용): 오른쪽에 ㅏ (자음 쪽으로 붙임)
+      const b = layoutBoxes('v', false);
+      koGuide = { chars:[{ch:'ㅏ', box:b.jung, ax:0, ay:0.5}], target:b.cho };
+    } else if (role === 'Ch') {              // 초성(밑모음용): 아래에 ㅜ (자음 쪽=위로 붙임)
+      const b = layoutBoxes('h', false);
+      koGuide = { chars:[{ch:'ㅜ', box:b.jung, ax:0.5, ay:0}], target:b.cho };
+    } else if (role === 'V') {               // 중성: ㄱ
+      const b = layoutBoxes(jungType(sub), false);
+      koGuide = { chars:[{ch:'ㄱ', box:b.cho, ax:0.5, ay:0.5}], target:b.jung };
+    } else if (role === 'F') {               // 종성: 위에 '가'(각−받침), 밑에 받침
+      const b = layoutBoxes('v', true);
+      const uni = { x:Math.min(b.cho.x,b.jung.x), y:Math.min(b.cho.y,b.jung.y),
+                    w:Math.max(b.cho.x+b.cho.w, b.jung.x+b.jung.w) - Math.min(b.cho.x,b.jung.x),
+                    h:Math.max(b.cho.y+b.cho.h, b.jung.y+b.jung.h) - Math.min(b.cho.y,b.jung.y) };
+      koGuide = { chars:[{ch:'가', box:uni, ax:0.5, ay:0.5}], target:b.jong };
+    }
   } else {
     guide.textContent = label;
     guide.className = 'guide-label guide-center';
@@ -736,7 +748,7 @@ function clearCanvas() {
 // 한글 가이드(짝 글자 + 그릴 위치 점선)를 캔버스 배경에 렌더
 function drawGuideLayer() {
   if (currentMode !== 'ko' || !koGuide) return;
-  koGuide.chars.forEach(c => drawGuideSkeleton(GUIDE_SKEL[c.ch], boxToPx(c.box)));
+  koGuide.chars.forEach(c => drawGuideGlyph(c.ch, boxToPx(c.box), c.ax, c.ay));
   if (koGuide.target) {
     const t = boxToPx(koGuide.target);
     ctx.save();
@@ -756,38 +768,28 @@ function boxToPx(b) {
   return { x: b.x * sx, y: basePx - (b.y + b.h) * sy, w: b.w * sx, h: b.h * sy };
 }
 
-// 가이드용 자모 골격선 (로컬 0~100 좌표, y 아래로+). 합성 박스에 채워 그림
-const GUIDE_SKEL = {
-  'ㄱ': [ [[12,15],[86,15],[86,86]] ],
-  'ㅏ': [ [[30,6],[30,94]], [[30,52],[88,52]] ],
-  'ㅜ': [ [[8,32],[92,32]], [[50,32],[50,90]] ]
-};
-
-// 골격선을 박스에 채워(stretch) 균일 굵기로 흐리게 그림 → 모든 가이드 통일
-function drawGuideSkeleton(strokes, box) {
-  if (!strokes) return;
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  strokes.forEach(s => s.forEach(p => {
-    if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
-    if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
-  }));
-  const bw = Math.max(maxX - minX, 1), bh = Math.max(maxY - minY, 1);
-  const sx = box.w / bw, sy = box.h / bh;
-
+// 짝 글자를 실제 폰트 글리프로, 박스에 맞춰(비율유지) 앵커 정렬해 흐리게 그림
+// ax/ay: 0=좌/상, 0.5=중앙, 1=우/하
+function drawGuideGlyph(ch, box, ax, ay) {
   ctx.save();
-  ctx.strokeStyle = 'rgba(0,0,0,0.16)';
-  ctx.lineWidth = 11;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  strokes.forEach(s => {
-    ctx.beginPath();
-    s.forEach((p, i) => {
-      const x = box.x + (p[0] - minX) * sx;
-      const y = box.y + (p[1] - minY) * sy;
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  });
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  const probe = 300;
+  ctx.font = 'bold ' + probe + 'px -apple-system, system-ui, sans-serif';
+  ctx.textBaseline = 'alphabetic';
+  const m = ctx.measureText(ch);
+  const asc  = m.actualBoundingBoxAscent  || probe * 0.70;
+  const desc = m.actualBoundingBoxDescent || 0;
+  const left = (m.actualBoundingBoxLeft  != null) ? m.actualBoundingBoxLeft  : 0;
+  const right= (m.actualBoundingBoxRight != null) ? m.actualBoundingBoxRight : m.width;
+  const gw = (left + right) || m.width || probe * 0.6;
+  const gh = (asc + desc) || probe * 0.7;
+  const s = Math.min(box.w / gw, box.h / gh) * 0.92;
+  const drawW = gw * s, drawH = gh * s;
+  const px = box.x + (box.w - drawW) * ax;   // 잉크 좌상단 위치 (앵커 적용)
+  const py = box.y + (box.h - drawH) * ay;
+  ctx.translate(px, py);
+  ctx.scale(s, s);
+  ctx.fillText(ch, left, asc);               // 잉크 좌상단을 (0,0)에 맞춤
   ctx.restore();
 }
 
