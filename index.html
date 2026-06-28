@@ -476,7 +476,7 @@
         Pages·Keynote 등에서 사용할 수 있어요.
       </div>
       <button class="reset-btn" onclick="resetAll()">전체 초기화</button>
-      <div style="font-size:0.65rem; color:#556; text-align:right;">버전 v8 · 2026-06-29</div>
+      <div style="font-size:0.65rem; color:#556; text-align:right;">버전 v9 · 2026-06-29</div>
     </div>
   </div>
 </main>
@@ -504,6 +504,13 @@ function jungType(v) {
   if (JUNG_HORIZONTAL.has(v)) return 'h';
   return 'm';
 }
+// 직접 그리는 단순 모음 14개 (섞임모음은 그리지 않고 아래 분해로 합성)
+const JUNG_SIMPLE = ['ㅏ','ㅐ','ㅑ','ㅒ','ㅓ','ㅔ','ㅕ','ㅖ','ㅗ','ㅛ','ㅜ','ㅠ','ㅡ','ㅣ'];
+// 섞임모음 → [가로파트, 세로파트]
+const MIXED_DECOMP = {
+  'ㅘ':['ㅗ','ㅏ'],'ㅙ':['ㅗ','ㅐ'],'ㅚ':['ㅗ','ㅣ'],
+  'ㅝ':['ㅜ','ㅓ'],'ㅞ':['ㅜ','ㅔ'],'ㅟ':['ㅜ','ㅣ'],'ㅢ':['ㅡ','ㅣ']
+};
 function isHangulSyllable(cp) { return cp >= 0xAC00 && cp <= 0xD7A3; }
 
 // ── 모드별 문자 그룹 ────────────────────────────────────────────────────────
@@ -516,7 +523,7 @@ const GROUPS_EN = [
 const GROUPS_KO = [
   { label: '초성 (ㅏㅓ 옆모음용)', items: CHO.map(c => ({ key: 'Cv:' + c, label: c })) },
   { label: '초성 (ㅗㅜ 밑모음용)', items: CHO.map(c => ({ key: 'Ch:' + c, label: c })) },
-  { label: '중성 (모음)',          items: JUNG.map(v => ({ key: 'V:' + v, label: v })) },
+  { label: '중성 (모음)',          items: JUNG_SIMPLE.map(v => ({ key: 'V:' + v, label: v })) },
   { label: '종성 (받침)',          items: JONG_SINGLES.map(c => ({ key: 'F:' + c, label: c })) },
 ];
 // ── 음절 따라쓰기 세트 (목표 음절 → 영역별로 자모 추출) ──────────────────────
@@ -529,7 +536,7 @@ function traceItem(cho, jung, jong, extract) {
   return { key: 'SYL:' + syllChar(cho, jung, jong), label: syllChar(cho, jung, jong),
            char: syllChar(cho, jung, jong), vowelType: jungType(jung), hasJong: !!jong, extract };
 }
-const REMAIN_VOWELS = JUNG.filter(v => v !== 'ㅏ' && v !== 'ㅗ');   // ㅏㅗ 외 19개
+const REMAIN_VOWELS = JUNG_SIMPLE.filter(v => v !== 'ㅏ' && v !== 'ㅗ');   // ㅏㅗ 외 단순모음 12개
 const GROUPS_KOSYL = [
   { label: '옆모음 초성 (X+ㅏ)', items: CHO.map((c, i) => traceItem(c, 'ㅏ', '', i === 0 ? { cho:'Cv:'+c, jung:'V:ㅏ' } : { cho:'Cv:'+c })) },
   { label: '밑모음 초성 (X+ㅗ)', items: CHO.map((c, i) => traceItem(c, 'ㅗ', '', i === 0 ? { cho:'Ch:'+c, jung:'V:ㅗ' } : { cho:'Ch:'+c })) },
@@ -1216,10 +1223,10 @@ function layoutBoxes(jt, hasJong) {
       ? { cho:{x:320,y:540,w:360,h:220}, jung:{x:120,y:310,w:760,h:210}, jong:{x:120,y:60,w:760,h:220} }
       : { cho:{x:300,y:430,w:400,h:330}, jung:{x:120,y:80,w:760,h:320} };
   }
-  // 섞임모음 (ㅘ ㅝ ㅢ 등): 초성 좌상단 + 모음을 그 아래 영역에 — 겹치지 않게 분리
+  // 섞임모음(ㅘㅞㅢ 등): ㅜ/ㅗ(가로)+ㅏ/ㅔ(세로)로 분해 → 자음 좌상, 세로파트 우상, 가로파트 아래
   return hasJong
-    ? { cho:{x:90,y:540,w:320,h:220}, jung:{x:80,y:290,w:860,h:230}, jong:{x:120,y:60,w:760,h:210} }
-    : { cho:{x:90,y:480,w:300,h:280}, jung:{x:80,y:60,w:860,h:390} };
+    ? { cho:{x:80,y:500,w:300,h:260}, jungV:{x:560,y:460,w:380,h:300}, jungH:{x:80,y:280,w:860,h:180}, jong:{x:120,y:60,w:760,h:190} }
+    : { cho:{x:90,y:430,w:330,h:300}, jungV:{x:580,y:380,w:360,h:360}, jungH:{x:90,y:60,w:850,h:300} };
 }
 
 // 음절코드 → placed strokes (폰트 좌표). 필요한 자모 없으면 null
@@ -1234,11 +1241,20 @@ function composeSyllable(code) {
   const hasJong = jongIdx > 0;
   const box = layoutBoxes(jt, hasJong);
 
-  const choStrokes  = savedStrokes[(jt === 'v' ? 'Cv:' : 'Ch:') + cho];
-  const jungStrokes = savedStrokes['V:' + jung];
-  if (!choStrokes || !jungStrokes) return null;
-
-  let placed = placeJamo(choStrokes, box.cho).concat(placeJamo(jungStrokes, box.jung));
+  let placed;
+  if (jt === 'm') {                                    // 섞임모음: 분해 합성
+    const [hPart, vPart] = MIXED_DECOMP[jung];
+    const cS = savedStrokes['Cv:' + cho];
+    const hS = savedStrokes['V:' + hPart];
+    const vS = savedStrokes['V:' + vPart];
+    if (!cS || !hS || !vS) return null;
+    placed = placeJamo(cS, box.cho).concat(placeJamo(hS, box.jungH)).concat(placeJamo(vS, box.jungV));
+  } else {
+    const cS = savedStrokes[(jt === 'v' ? 'Cv:' : 'Ch:') + cho];
+    const vS = savedStrokes['V:' + jung];
+    if (!cS || !vS) return null;
+    placed = placeJamo(cS, box.cho).concat(placeJamo(vS, box.jung));
+  }
 
   if (hasJong) {
     if (JONG_DECOMP[jong]) {                       // 겹받침 → 좌우 분할
