@@ -408,7 +408,8 @@
   <h1>✍️ 손글씨 폰트 메이커</h1>
   <div class="mode-toggle">
     <button id="mode-en" class="mode-btn active" onclick="setMode('en')">영어</button>
-    <button id="mode-ko" class="mode-btn" onclick="setMode('ko')">한글</button>
+    <button id="mode-ko" class="mode-btn" onclick="setMode('ko')">한글자모</button>
+    <button id="mode-kosyl" class="mode-btn" onclick="setMode('kosyl')">한글음절</button>
   </div>
   <div class="progress-bar">
     <span class="pen-badge" id="pen-badge">손가락/마우스</span>
@@ -517,7 +518,25 @@ const GROUPS_KO = [
   { label: '중성 (모음)',          items: JUNG.map(v => ({ key: 'V:' + v, label: v })) },
   { label: '종성 (받침)',          items: JONG_SINGLES.map(c => ({ key: 'F:' + c, label: c })) },
 ];
-const PREVIEW_DEFAULT = { en: 'Hello 123', ko: '한글 손글씨' };
+// ── 음절 따라쓰기 세트 (목표 음절 → 영역별로 자모 추출) ──────────────────────
+function syllChar(cho, jung, jong) {
+  const code = 0xAC00 + (CHO.indexOf(cho) * 21 + JUNG.indexOf(jung)) * 28 + (jong ? JONG.indexOf(jong) : 0);
+  return String.fromCharCode(code);
+}
+// extract: { 영역: 저장키 }  (영역 cho/jung/jong 의 획을 그 키로 저장)
+function traceItem(cho, jung, jong, extract) {
+  return { key: 'SYL:' + syllChar(cho, jung, jong), label: syllChar(cho, jung, jong),
+           char: syllChar(cho, jung, jong), vowelType: jungType(jung), hasJong: !!jong, extract };
+}
+const REMAIN_VOWELS = JUNG.filter(v => v !== 'ㅏ' && v !== 'ㅗ');   // ㅏㅗ 외 19개
+const GROUPS_KOSYL = [
+  { label: '옆모음 초성 (X+ㅏ)', items: CHO.map((c, i) => traceItem(c, 'ㅏ', '', i === 0 ? { cho:'Cv:'+c, jung:'V:ㅏ' } : { cho:'Cv:'+c })) },
+  { label: '밑모음 초성 (X+ㅗ)', items: CHO.map((c, i) => traceItem(c, 'ㅗ', '', i === 0 ? { cho:'Ch:'+c, jung:'V:ㅗ' } : { cho:'Ch:'+c })) },
+  { label: '모음 (ㅇ+모음)',      items: REMAIN_VOWELS.map(v => traceItem('ㅇ', v, '', { jung:'V:'+v })) },
+  { label: '받침 (앗받침)',       items: JONG_SINGLES.map(j => traceItem('ㅇ', 'ㅏ', j, { jong:'F:'+j })) },
+];
+
+const PREVIEW_DEFAULT = { en: 'Hello 123', ko: '한글 손글씨', kosyl: '한글 손글씨' };
 
 const STORE_KEY = 'hwfont_strokes_v2';
 const NAME_KEY  = 'hwfont_name';
@@ -533,20 +552,32 @@ let isDrawing = false;
 let activePointerId = null;
 let currentStroke = [];
 let allStrokes = [];
-let koGuide = null;       // 한글 가이드: { chars:[{ch,box}], target } | null
+let koGuide = null;             // 한글 자모 가이드
+let currentTraceItem = null;    // 음절 모드: 현재 따라쓰는 음절 정보
+let reviewAssign = null;        // 음절 모드: 획별 분류 ['cho'|'jung'|'jong'] (검토중일 때만)
 
 const canvas = document.getElementById('draw-canvas');
 const ctx = canvas.getContext('2d');
 
-function currentGroups() { return currentMode === 'en' ? GROUPS_EN : GROUPS_KO; }
-function currentKeys()   { return currentGroups().flatMap(g => g.items.map(i => i.key)); }
-function labelForKey(key) {
-  for (const g of currentGroups()) for (const it of g.items) if (it.key === key) return it.label;
-  return key;
+function currentGroups() {
+  if (currentMode === 'en') return GROUPS_EN;
+  if (currentMode === 'kosyl') return GROUPS_KOSYL;
+  return GROUPS_KO;
 }
+function currentKeys()   { return currentGroups().flatMap(g => g.items.map(i => i.key)); }
+function findItem(key) {
+  for (const g of currentGroups()) for (const it of g.items) if (it.key === key) return it;
+  return null;
+}
+function labelForKey(key) { const it = findItem(key); return it ? it.label : key; }
 function groupLabelForKey(key) {
   for (const g of currentGroups()) for (const it of g.items) if (it.key === key) return g.label;
   return '';
+}
+// 항목 완성 여부 (음절 모드는 추출 대상 키가 모두 있으면 완성)
+function itemDone(it) {
+  if (currentMode === 'kosyl') return it.extract && Object.values(it.extract).every(k => savedStrokes[k]);
+  return !!savedStrokes[it.key];
 }
 
 // ── 모드 전환 ───────────────────────────────────────────────────────────────
@@ -555,8 +586,10 @@ function setMode(mode) {
   currentMode = mode;
   document.getElementById('mode-en').classList.toggle('active', mode === 'en');
   document.getElementById('mode-ko').classList.toggle('active', mode === 'ko');
-  document.body.classList.toggle('ko-mode', mode === 'ko');
+  document.getElementById('mode-kosyl').classList.toggle('active', mode === 'kosyl');
+  document.body.classList.toggle('ko-mode', mode !== 'en');   // 한글 계열은 기준선 숨김
   document.getElementById('preview-text-input').value = PREVIEW_DEFAULT[mode];
+  reviewAssign = null;
   try { localStorage.setItem(MODE_KEY, mode); } catch (e) {}
 
   buildCharPanel();
@@ -580,7 +613,7 @@ function buildCharPanel() {
     grid.className = 'char-grid';
     group.items.forEach(it => {
       const btn = document.createElement('button');
-      btn.className = 'char-btn' + (savedStrokes[it.key] ? ' done' : '');
+      btn.className = 'char-btn' + (itemDone(it) ? ' done' : '');
       btn.textContent = it.label;
       btn.onclick = () => selectKey(it.key);
       panelBtns[it.key] = btn;
@@ -599,6 +632,19 @@ function selectKey(key) {
     btn.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
   }
   const label = labelForKey(key);
+
+  // ── 음절 따라쓰기 모드 ──
+  if (currentMode === 'kosyl') {
+    currentTraceItem = findItem(key);
+    reviewAssign = null;
+    allStrokes = [];                          // 매번 새로 따라 씀
+    document.getElementById('guide-label').textContent = '';
+    document.getElementById('current-char-label').textContent =
+      `따라 쓰기: "${label}"  ·  초성=빨강 / 중성=초록 / 종성=파랑 칸`;
+    redrawCanvas();
+    return;
+  }
+
   document.getElementById('current-char-label').textContent =
     currentMode === 'en' ? `현재 문자: "${label}"` : `현재 자모: "${label}" — ${groupLabelForKey(key)}`;
 
@@ -671,6 +717,8 @@ function markPenBadge(type) {
 // ── 그리기 (Pointer Events) ─────────────────────────────────────────────────
 function startDraw(e) {
   if (!currentKey) { showToast('먼저 문자를 선택하세요', true); return; }
+  // 음절 검토 중: 그리기 대신 획 탭 → 분류 변경
+  if (currentMode === 'kosyl' && reviewAssign) { e.preventDefault(); reassignStrokeAt(getPos(e)); return; }
   if (isDrawing) return;
   e.preventDefault();
   markPenBadge(e.pointerType);
@@ -722,11 +770,11 @@ function endDraw(e) {
   redrawCanvas();
 }
 
-function drawStrokePath(targetCtx, points, widthScale = 1) {
+function drawStrokePath(targetCtx, points, widthScale = 1, color = '#111') {
   if (points.length < 2) return;
   targetCtx.lineCap = 'round';
   targetCtx.lineJoin = 'round';
-  targetCtx.strokeStyle = '#111';
+  targetCtx.strokeStyle = color;
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1], b = points[i];
     targetCtx.lineWidth = ((a.w + b.w) / 2) * widthScale;
@@ -737,33 +785,63 @@ function drawStrokePath(targetCtx, points, widthScale = 1) {
   }
 }
 
+const REGION_COLOR = { cho: '#e94560', jung: '#2e9a44', jong: '#1f78c8' };
+
 function redrawCanvas() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawGuideLayer();
-  allStrokes.forEach(s => drawStrokePath(ctx, s.points));
+  if (currentMode === 'kosyl' && reviewAssign) {
+    allStrokes.forEach((s, i) => drawStrokePath(ctx, s.points, 1, REGION_COLOR[reviewAssign[i]] || '#111'));
+  } else {
+    allStrokes.forEach(s => drawStrokePath(ctx, s.points));
+  }
 }
 
 function clearCanvas() {
   allStrokes = [];
+  reviewAssign = null;
   redrawCanvas();
 }
 
 // 한글 가이드(짝 글자 + 그릴 위치 점선)를 캔버스 배경에 렌더
 function drawGuideLayer() {
+  if (currentMode === 'kosyl') { drawTraceGuide(); return; }
   if (currentMode !== 'ko' || !koGuide) return;
   koGuide.chars.forEach(c => {
     const clipY = c.clipAbove ? boxToPx(c.clipAbove).y : null;   // 이 y 아래(받침 영역)는 가림
     drawGuideGlyph(c.ch, boxToPx(c.box), c.ax, c.ay, clipY);
   });
-  if (koGuide.target) {
-    const t = boxToPx(koGuide.target);
-    ctx.save();
-    ctx.strokeStyle = 'rgba(233,69,96,0.30)';
-    ctx.setLineDash([7, 7]);
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(t.x, t.y, t.w, t.h);
-    ctx.restore();
-  }
+  if (koGuide.target) outlineBox(koGuide.target, 'rgba(233,69,96,0.30)');
+}
+
+function unionBoxes(boxes) {
+  const x = Math.min(...boxes.map(b => b.x));
+  const y = Math.min(...boxes.map(b => b.y));
+  return { x, y,
+    w: Math.max(...boxes.map(b => b.x + b.w)) - x,
+    h: Math.max(...boxes.map(b => b.y + b.h)) - y };
+}
+
+function outlineBox(b, color) {
+  const t = boxToPx(b);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.setLineDash([7, 7]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(t.x, t.y, t.w, t.h);
+  ctx.restore();
+}
+
+// 음절 따라쓰기 가이드: 흐린 목표 음절 + 초/중/종 영역 색 박스
+function drawTraceGuide() {
+  if (!currentTraceItem) return;
+  const it = currentTraceItem;
+  const b = layoutBoxes(it.vowelType, it.hasJong);
+  const boxes = it.hasJong ? [b.cho, b.jung, b.jong] : [b.cho, b.jung];
+  drawGuideGlyph(it.char, boxToPx(unionBoxes(boxes)), 0.5, 0.5);
+  outlineBox(b.cho, 'rgba(233,69,96,0.32)');                  // 초성=빨강
+  outlineBox(b.jung, 'rgba(46,154,68,0.32)');                 // 중성=초록
+  if (b.jong) outlineBox(b.jong, 'rgba(31,120,200,0.32)');    // 종성=파랑
 }
 
 // 폰트 좌표 박스(y 위로+, 베이스라인0) → 캔버스 픽셀 박스
@@ -807,12 +885,16 @@ function drawGuideGlyph(ch, box, ax, ay, clipBottomY) {
 function undoStroke() {
   if (allStrokes.length === 0) return;
   allStrokes.pop();
+  reviewAssign = null;     // 검토 상태였다면 해제하고 다시 그리기 단계로
   redrawCanvas();
 }
 
 // ── 저장 / 영속화 ───────────────────────────────────────────────────────────
 function saveChar() {
   if (!currentKey) { showToast('문자를 선택하세요', true); return; }
+
+  if (currentMode === 'kosyl') { handleSyllableSave(); return; }
+
   if (allStrokes.length === 0) { showToast('먼저 글자를 그려주세요', true); return; }
 
   savedStrokes[currentKey] = JSON.parse(JSON.stringify(allStrokes));
@@ -826,6 +908,82 @@ function saveChar() {
   const keys = currentKeys();
   const idx = keys.indexOf(currentKey);
   if (idx < keys.length - 1) selectKey(keys[idx + 1]);
+}
+
+// ── 음절 따라쓰기: 추출 → 검토 → 확정 ───────────────────────────────────────
+function handleSyllableSave() {
+  if (!reviewAssign) {
+    if (allStrokes.length === 0) { showToast('먼저 음절을 따라 쓰세요', true); return; }
+    reviewAssign = assignStrokes(currentTraceItem);   // 영역별 자동 분류
+    redrawCanvas();                                    // 색으로 표시
+    showToast('색 확인! 틀린 획은 탭해서 초→중→종 변경, 다시 [저장]으로 확정');
+  } else {
+    commitExtract(currentTraceItem, reviewAssign);
+  }
+}
+
+function strokeCentroid(s) {
+  let x = 0, y = 0; s.points.forEach(p => { x += p.x; y += p.y; });
+  return { x: x / s.points.length, y: y / s.points.length };
+}
+
+// 각 획을 초/중/종 영역에 배정 (중심점이 든 박스, 없으면 가장 가까운 박스)
+function assignStrokes(item) {
+  const b = layoutBoxes(item.vowelType, item.hasJong);
+  const regions = [['cho', boxToPx(b.cho)], ['jung', boxToPx(b.jung)]];
+  if (item.hasJong) regions.push(['jong', boxToPx(b.jong)]);
+  return allStrokes.map(s => {
+    const c = strokeCentroid(s);
+    let inside = regions.find(([, r]) => c.x >= r.x && c.x <= r.x + r.w && c.y >= r.y && c.y <= r.y + r.h);
+    if (inside) return inside[0];
+    let best = regions[0][0], bestD = Infinity;
+    regions.forEach(([name, r]) => {
+      const dx = c.x - (r.x + r.w / 2), dy = c.y - (r.y + r.h / 2), d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = name; }
+    });
+    return best;
+  });
+}
+
+// 검토 중 획 탭 → 분류 순환 (초→중→종→초)
+function reassignStrokeAt(pos) {
+  let idx = -1, bestD = Infinity;
+  allStrokes.forEach((s, i) => {
+    s.points.forEach(p => {
+      const d = (p.x - pos.x) ** 2 + (p.y - pos.y) ** 2;
+      if (d < bestD) { bestD = d; idx = i; }
+    });
+  });
+  if (idx < 0 || Math.sqrt(bestD) > 60) return;   // 너무 멀면 무시
+  const cycle = currentTraceItem.hasJong ? ['cho', 'jung', 'jong'] : ['cho', 'jung'];
+  const cur = cycle.indexOf(reviewAssign[idx]);
+  reviewAssign[idx] = cycle[(cur + 1) % cycle.length];
+  redrawCanvas();
+}
+
+// 확정: 영역별 획을 추출 대상 키로 저장
+function commitExtract(item, assign) {
+  const groups = { cho: [], jung: [], jong: [] };
+  allStrokes.forEach((s, i) => groups[assign[i]].push(JSON.parse(JSON.stringify(s))));
+
+  const saved = [];
+  for (const region in item.extract) {
+    const key = item.extract[region];
+    if (groups[region] && groups[region].length) { savedStrokes[key] = groups[region]; saved.push(key.split(':')[1]); }
+  }
+  if (saved.length === 0) { showToast('분류된 획이 없어요. 다시 시도', true); return; }
+
+  persist();
+  reviewAssign = null;
+  allStrokes = [];
+  buildCharPanel();                  // done 표시 갱신
+  updateProgress();
+  updatePreview();
+  showToast(`추출 완료: ${saved.join(', ')}`);
+
+  const keys = currentKeys();
+  const idx = keys.indexOf(currentKey);
+  if (idx < keys.length - 1) selectKey(keys[idx + 1]); else { selectKey(currentKey); }
 }
 
 function persist() {
@@ -842,12 +1000,13 @@ function loadSaved() {
     const name = localStorage.getItem(NAME_KEY);
     if (name) document.getElementById('font-name').value = name;
     const mode = localStorage.getItem(MODE_KEY);
-    if (mode === 'en' || mode === 'ko') currentMode = mode;
+    if (mode === 'en' || mode === 'ko' || mode === 'kosyl') currentMode = mode;
   } catch (err) { savedStrokes = {}; }
 
   document.getElementById('mode-en').classList.toggle('active', currentMode === 'en');
   document.getElementById('mode-ko').classList.toggle('active', currentMode === 'ko');
-  document.body.classList.toggle('ko-mode', currentMode === 'ko');
+  document.getElementById('mode-kosyl').classList.toggle('active', currentMode === 'kosyl');
+  document.body.classList.toggle('ko-mode', currentMode !== 'en');
 }
 
 function resetAll() {
@@ -863,16 +1022,16 @@ function resetAll() {
 }
 
 function updateProgress() {
-  const keys = currentKeys();
-  const done = keys.filter(k => savedStrokes[k]).length;
-  const total = keys.length;
+  const items = currentGroups().flatMap(g => g.items);
+  const done = items.filter(itemDone).length;
+  const total = items.length;
   document.getElementById('done-count').textContent = done;
   document.getElementById('total-count').textContent = total;
   document.getElementById('progress-text').textContent = `${done} / ${total}`;
   document.getElementById('progress-inner').style.width = `${(done / total) * 100}%`;
 
   const info = document.getElementById('compose-info');
-  info.textContent = currentMode === 'ko' ? ` · 조합가능 ${countComposable()}자` : '';
+  info.textContent = currentMode !== 'en' ? ` · 조합가능 ${countComposable()}자` : '';
 }
 
 // 현재 그려진 자모로 만들 수 있는 음절 수
