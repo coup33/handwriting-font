@@ -157,13 +157,18 @@
       position: absolute;
       font-size: 16vmin;
       font-weight: bold;
-      color: rgba(0,0,0,0.05);
+      color: rgba(0,0,0,0.09);
       top: 50%; left: 50%;
       transform: translate(-50%, -50%);
       pointer-events: none;
       user-select: none;
       z-index: 0;
     }
+    /* 한글 자모: 짝 글자를 들어갈 위치에 표시 */
+    .guide-label.guide-right  { top: 50%; left: 72%; }
+    .guide-label.guide-bottom { top: 73%; left: 50%; }
+    .guide-label.guide-left   { top: 42%; left: 27%; }
+    .guide-label.guide-top    { top: 30%; left: 50%; }
 
     /* 4선 기준선 (베이스라인/x-height 등) */
     .guide-lines {
@@ -586,7 +591,18 @@ function selectKey(key) {
   const label = labelForKey(key);
   document.getElementById('current-char-label').textContent =
     currentMode === 'en' ? `현재 문자: "${label}"` : `현재 자모: "${label}" — ${groupLabelForKey(key)}`;
-  document.getElementById('guide-label').textContent = label;
+
+  // 가이드: 한글은 함께 들어갈 짝 글자를 위치에 맞춰 흐리게 표시 (어느 벌인지 구분 + 위치 잡기)
+  const guide = document.getElementById('guide-label');
+  let gChar = label, gPos = 'center';
+  if (currentMode === 'ko') {
+    if      (key.startsWith('Cv:')) { gChar = 'ㅏ'; gPos = 'right';  }  // 옆모음용: 오른쪽에 ㅏ
+    else if (key.startsWith('Ch:')) { gChar = 'ㅜ'; gPos = 'bottom'; }  // 밑모음용: 아래에 ㅜ
+    else if (key.startsWith('V:'))  { gChar = 'ㄱ'; gPos = 'left';   }  // 중성: 왼쪽에 ㄱ
+    else if (key.startsWith('F:'))  { gChar = '가'; gPos = 'top';    }  // 종성: 위에 가, 밑에 받침
+  }
+  guide.textContent = gChar;
+  guide.className = 'guide-label guide-' + gPos;
 
   allStrokes = savedStrokes[key] ? JSON.parse(JSON.stringify(savedStrokes[key])) : [];
   redrawCanvas();
